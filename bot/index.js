@@ -7,15 +7,37 @@ const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
 const pino = require("pino");
 const Groq = require("groq-sdk");
+const { createServer } = require("http");
+const { Server } = require("socket.io");
 require("dotenv").config({ path: ".env.local" });
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Conversation history per user
-const userSessions = {};
+// ─── Socket.IO Server (port 3001) ───────────────────────────────────────────
+const httpServer = createServer();
+const io = new Server(httpServer, {
+  cors: { origin: "*" },
+});
 
-// Order tracking per user
-const userOrders = {};
+let isConnected = false;
+let lastQR = null;
+
+io.on("connection", (socket) => {
+  console.log("🖥️  Admin dashboard connected");
+  // Send current status immediately to new admin connection
+  if (isConnected) {
+    socket.emit("whatsapp-connected");
+  } else if (lastQR) {
+    socket.emit("qr", lastQR);
+  }
+});
+
+httpServer.listen(3001, () => {
+  console.log("🔌 Socket.IO running on port 3001");
+});
+
+// ─── AI Setup ────────────────────────────────────────────────────────────────
+const userSessions = {};
 
 const SYSTEM_PROMPT = `
 You are a smart, friendly and professional sales assistant for "Ahsan Fabrics" — a trusted fabric shop in Lahore.
@@ -25,7 +47,7 @@ You are a smart, friendly and professional sales assistant for "Ahsan Fabrics" �
 - Location: Barkat Market, Lahore
 - Hours: 7 days a week, 9AM to 6PM
 - Contact: 0300-1234567
-- Delivery: Available via WhatsApp order
+- Website: www.ahsanfabrics.com
 
 🧵 AVAILABLE FABRICS & PRICES (per meter):
 
@@ -61,19 +83,8 @@ KHADDAR:
 - Printed Khaddar: Rs. 420/meter
 - Embroidered Khaddar: Rs. 650/meter
 
-📦 DELIVERY POLICY:
-- Delivery available all over Pakistan
-...
-🛒 ORDER PROCESS (IMPORTANT - follow this exactly):
-When a customer wants to place an order, collect this info step by step:
-1. Ask: Which fabric and quality?
-...
-
-
-
 🛒 ORDERING:
-- If customer wants to place an order, tell them to visit our website:
-- Website: www.ahsanfabrics.com
+- If customer wants to place an order, tell them to visit our website
 - English: "To place an order, please visit our website: www.ahsanfabrics.com"
 - Urdu: "Order karne k liye hamare website pe jain: www.ahsanfabrics.com"
 - Do NOT collect any order details via WhatsApp
@@ -81,19 +92,19 @@ When a customer wants to place an order, collect this info step by step:
 🌐 LANGUAGE RULE (VERY IMPORTANT):
 - If customer writes in ENGLISH → reply in English only
 - If customer writes in URDU (roman or actual urdu script) → reply in Urdu only
-- Match customer's language in EVERY reply — never mix unless customer mixes
+- Match customer language in EVERY reply — never mix
 
 💬 PERSONALITY:
 - Friendly, helpful, professional
 - Use emojis naturally (not too much)
 - Keep replies concise and clear
-- If asked something you don't know, politely say to call: 0300-1234567
+- If asked something you don't know, say to call: 0300-1234567
 - Never make up fabric types or prices not listed above
 - Always greet new customers warmly
 
 🚫 RULES:
 - Never discuss anything unrelated to fabrics or the shop
-- If someone asks unrelated stuff, politely redirect to fabric topics
+- Politely redirect unrelated questions to fabric topics
 `;
 
 async function getAIReply(userNumber, userMessage) {
@@ -101,12 +112,9 @@ async function getAIReply(userNumber, userMessage) {
     userSessions[userNumber] = [];
   }
 
-  userSessions[userNumber].push({
-    role: "user",
-    content: userMessage,
-  });
+  userSessions[userNumber].push({ role: "user", content: userMessage });
 
-  // Keep last 20 messages only (memory management)
+  // Keep last 20 messages
   if (userSessions[userNumber].length > 20) {
     userSessions[userNumber] = userSessions[userNumber].slice(-20);
   }
@@ -122,15 +130,11 @@ async function getAIReply(userNumber, userMessage) {
   });
 
   const reply = response.choices[0].message.content;
-
-  userSessions[userNumber].push({
-    role: "assistant",
-    content: reply,
-  });
-
+  userSessions[userNumber].push({ role: "assistant", content: reply });
   return reply;
 }
 
+// ─── WhatsApp Bot ─────────────────────────────────────────────────────────────
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 
@@ -144,11 +148,16 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("📱 Scan this QR code with WhatsApp:");
+      console.log("📱 QR Code generated — scan with WhatsApp");
       qrcode.generate(qr, { small: true });
+      lastQR = qr;
+      isConnected = false;
+      io.emit("qr", qr); // Send to admin dashboard
     }
 
     if (connection === "close") {
+      isConnected = false;
+      io.emit("whatsapp-disconnected");
       const shouldReconnect =
         new Boom(lastDisconnect?.error)?.output?.statusCode !==
         DisconnectReason.loggedOut;
@@ -157,7 +166,10 @@ async function startBot() {
     }
 
     if (connection === "open") {
+      isConnected = true;
+      lastQR = null;
       console.log("✅ Ahsan Fabrics Bot is Live!");
+      io.emit("whatsapp-connected"); // Tell admin dashboard
     }
   });
 
@@ -180,14 +192,10 @@ async function startBot() {
       console.log(`📩 From ${from}: ${text}`);
 
       try {
-        // Typing indicator
         await sock.sendPresenceUpdate("composing", from);
-
         const reply = await getAIReply(from, text);
-
         await sock.sendMessage(from, { text: reply });
         await sock.sendPresenceUpdate("paused", from);
-
         console.log(`✅ Replied to ${from}`);
       } catch (err) {
         console.error("Error:", err.message);
