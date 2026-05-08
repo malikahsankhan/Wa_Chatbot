@@ -2,11 +2,16 @@
   "name": "whatsapp-chatbot",
   "version": "0.1.0",
   "private": true,
+
   "scripts": {
     "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "vercel-build": "next build --webpack",
+
     "bot": "node bot/index.js",
     "dev:all": "concurrently \"npm run dev\" \"npm run bot\""
   },
+
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@hapi/boom": "^10.0.1",
@@ -21,6 +26,7 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3"
   },
+
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "autoprefixer": "^10.5.0",
