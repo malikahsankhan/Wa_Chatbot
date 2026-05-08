@@ -6,9 +6,17 @@ import { io } from 'socket.io-client'
 export default function AdminPage() {
   const [status, setStatus] = useState('connecting')
   const [qrImage, setQrImage] = useState(null)
+  const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [socketError, setSocketError] = useState('')
 
   useEffect(() => {
-    const socket = io('http://localhost:3001')
+    const socketHost = window.location.hostname || 'localhost'
+    const socket = io(`http://${socketHost}:3001`, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+    })
     const handleDisconnect = () => {
       socket.emit('disconnect-request')
     }
@@ -17,22 +25,38 @@ export default function AdminPage() {
 
     socket.on('connect', () => {
       console.log('Socket connected')
+      setSocketError('')
     })
 
     socket.on('qr', (imageUrl) => {
       console.log('QR event received')
       setQrImage(imageUrl)
       setStatus('qr')
+      setIsDisconnecting(false)
     })
 
     socket.on('whatsapp-connected', () => {
       setStatus('connected')
       setQrImage(null)
+      setIsDisconnecting(false)
     })
 
     socket.on('whatsapp-disconnected', () => {
       setStatus('connecting')
       setQrImage(null)
+      setIsDisconnecting(false)
+    })
+
+    socket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err?.message)
+      setSocketError('Cannot connect to bot server on port 3001. Start bot and refresh.')
+      setStatus('connecting')
+      setQrImage(null)
+      setIsDisconnecting(false)
+    })
+
+    socket.on('disconnect', () => {
+      setSocketError('Socket disconnected. Retrying...')
     })
 
     return () => {
@@ -40,6 +64,18 @@ export default function AdminPage() {
       socket.disconnect()
     }
   }, [])
+
+  const handleDisconnect = () => {
+    if (isDisconnecting) return
+
+    // Optimistic UI update so admin panel responds immediately.
+    setIsDisconnecting(true)
+    setStatus('connecting')
+    setQrImage(null)
+
+    const ev = new CustomEvent('admin-disconnect')
+    window.dispatchEvent(ev)
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0f172a] via-[#111827] to-black flex items-center justify-center px-4 py-3">
@@ -85,6 +121,11 @@ export default function AdminPage() {
                     <p className="text-gray-400 text-sm mt-2 lg:max-w-lg">
                       Connecting to the WhatsApp bot server. Wait a few seconds for the QR to arrive.
                     </p>
+                    {socketError && (
+                      <p className="text-red-400 text-sm mt-3 lg:max-w-lg">
+                        {socketError}
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -141,13 +182,11 @@ export default function AdminPage() {
                   <div className="flex flex-col items-center gap-4">
                     <button
                       type="button"
-                      className="w-full max-w-xs bg-red-600 hover:bg-red-700 text-white font-medium px-4 py-3 rounded-full transition-colors"
-                      onClick={() => {
-                        const ev = new CustomEvent('admin-disconnect')
-                        window.dispatchEvent(ev)
-                      }}
+                      disabled={isDisconnecting}
+                      className="w-full max-w-xs bg-red-600 hover:bg-red-700 disabled:bg-red-500/70 disabled:cursor-not-allowed text-white font-medium px-4 py-3 rounded-full transition-colors"
+                      onClick={handleDisconnect}
                     >
-                      Disconnect Device
+                      {isDisconnecting ? 'Disconnecting...' : 'Disconnect Device'}
                     </button>
                   </div>
                 </div>

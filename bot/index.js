@@ -26,6 +26,18 @@ let isConnected = false;
 let lastQRImage = null;
 let sock = null; // Global sock reference
 
+function clearAuthInfo() {
+  try {
+    const authPath = path.join(process.cwd(), "auth_info");
+    if (fs.existsSync(authPath)) {
+      fs.rmSync(authPath, { recursive: true, force: true });
+      console.log("✅ Auth data cleared");
+    }
+  } catch (err) {
+    console.error("Error clearing auth:", err);
+  }
+}
+
 io.on("connection", (socket) => {
   console.log("🖥️  Admin dashboard connected");
   // Send current status immediately to new admin connection
@@ -36,21 +48,21 @@ io.on("connection", (socket) => {
   }
 
   // Handle disconnect request from admin
-  socket.on("disconnect-request", () => {
+  socket.on("disconnect-request", async () => {
     if (sock) {
       console.log("🔌 Disconnecting WhatsApp...");
-      // Clear auth data
+      // Clear auth data before logout so restart uses fresh state
+      clearAuthInfo();
       try {
-        const authPath = path.join(process.cwd(), "auth_info");
-        if (fs.existsSync(authPath)) {
-          fs.rmSync(authPath, { recursive: true, force: true });
-          console.log("✅ Auth data cleared");
+        await sock.logout();
+      } catch (e) {
+        console.log("Logout error:", e?.message || e);
+        try {
+          sock.end();
+        } catch (err) {
+          console.log("Socket already closed");
         }
-      } catch (err) {
-        console.error("Error clearing auth:", err);
       }
-      // Logout and restart
-      sock.logout().catch(() => {});
     }
   });
 });
@@ -188,11 +200,14 @@ async function startBot() {
       io.emit("whatsapp-disconnected");
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
       console.log("Connection closed with status:", statusCode);
-      // Always restart bot after disconnect (including logout)
+      // Always recover connection so admin can get a fresh QR.
+      if (statusCode === DisconnectReason.loggedOut) {
+        clearAuthInfo();
+      }
       setTimeout(() => {
         console.log("Restarting bot...");
         startBot();
-      }, 1000);
+      }, 2000);
     }
 
     if (connection === "open") {
