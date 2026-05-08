@@ -5,10 +5,13 @@ const {
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 const pino = require("pino");
 const Groq = require("groq-sdk");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
+const fs = require("fs");
+const path = require("path");
 require("dotenv").config({ path: ".env.local" });
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -20,16 +23,36 @@ const io = new Server(httpServer, {
 });
 
 let isConnected = false;
-let lastQR = null;
+let lastQRImage = null;
+let sock = null; // Global sock reference
 
 io.on("connection", (socket) => {
   console.log("🖥️  Admin dashboard connected");
   // Send current status immediately to new admin connection
   if (isConnected) {
     socket.emit("whatsapp-connected");
-  } else if (lastQR) {
-    socket.emit("qr", lastQR);
+  } else if (lastQRImage) {
+    socket.emit("qr", lastQRImage);
   }
+
+  // Handle disconnect request from admin
+  socket.on("disconnect-request", () => {
+    if (sock) {
+      console.log("🔌 Disconnecting WhatsApp...");
+      // Clear auth data
+      try {
+        const authPath = path.join(process.cwd(), "auth_info");
+        if (fs.existsSync(authPath)) {
+          fs.rmSync(authPath, { recursive: true, force: true });
+          console.log("✅ Auth data cleared");
+        }
+      } catch (err) {
+        console.error("Error clearing auth:", err);
+      }
+      // Logout and restart
+      sock.logout().catch(() => {});
+    }
+  });
 });
 
 httpServer.listen(3001, () => {
@@ -138,36 +161,43 @@ async function getAIReply(userNumber, userMessage) {
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
   });
 
-  sock.ev.on("connection.update", (update) => {
+  sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
       console.log("📱 QR Code generated — scan with WhatsApp");
       qrcode.generate(qr, { small: true });
-      lastQR = qr;
+      // Generate data URL for admin UI
+      const imageUrl = await QRCode.toDataURL(qr, {
+        width: 280,
+        margin: 2,
+      });
+      lastQRImage = imageUrl;
       isConnected = false;
-      io.emit("qr", qr); // Send to admin dashboard
+      io.emit("qr", imageUrl); // Send image URL to admin dashboard
     }
 
     if (connection === "close") {
       isConnected = false;
       io.emit("whatsapp-disconnected");
-      const shouldReconnect =
-        new Boom(lastDisconnect?.error)?.output?.statusCode !==
-        DisconnectReason.loggedOut;
-      console.log("Connection closed. Reconnecting:", shouldReconnect);
-      if (shouldReconnect) startBot();
+      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+      console.log("Connection closed with status:", statusCode);
+      // Always restart bot after disconnect (including logout)
+      setTimeout(() => {
+        console.log("Restarting bot...");
+        startBot();
+      }, 1000);
     }
 
     if (connection === "open") {
       isConnected = true;
-      lastQR = null;
+      lastQRImage = null;
       console.log("✅ Ahsan Fabrics Bot is Live!");
       io.emit("whatsapp-connected"); // Tell admin dashboard
     }
