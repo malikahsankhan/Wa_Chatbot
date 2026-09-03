@@ -2,6 +2,7 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestWaWebVersion,
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const qrcode = require("qrcode-terminal");
@@ -178,7 +179,7 @@ async function getAIReply(userNumber, userMessage) {
   }
 
   const response = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
+    model: "qwen/qwen3.8-27b",
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       ...userSessions[userNumber],
@@ -196,7 +197,11 @@ async function getAIReply(userNumber, userMessage) {
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth_info");
 
+  const { version, isLatest } = await fetchLatestWaWebVersion();
+  console.log(`📦 WA version: ${version.join(".")} — isLatest: ${isLatest}`);
+
   sock = makeWASocket({
+    version,
     auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
@@ -266,7 +271,10 @@ async function startBot() {
         await sock.sendPresenceUpdate("paused", from);
         console.log(`✅ Replied to ${from}`);
       } catch (err) {
-        console.error("Error:", err.message);
+        console.error("Error replying to", from);
+        console.error("Status:", err?.status);
+        console.error("Message:", err?.message);
+        console.error("Body:", JSON.stringify(err?.error ?? err));
       }
     }
   });
